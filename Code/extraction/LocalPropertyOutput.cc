@@ -14,7 +14,10 @@
 #include "util/span.h"
 #include "constants.h"
 #include "units.h"
-
+#ifdef USE_HDF5
+#include <hdf5.h>
+#pragma message("HDF5 is enabled!")
+#endif
 namespace hemelb::extraction
 {
     namespace
@@ -28,6 +31,7 @@ namespace hemelb::extraction
 	return enc << arg;
       }
       // Recursive case - N + 1 args
+
       template <typename T, typename... Ts>
       io::Writer& encode(io::Writer& enc, T arg, Ts... args) {
 	return encode(enc << arg, args...);
@@ -80,7 +84,8 @@ namespace hemelb::extraction
 	// The part before %d
 	auto beginning = p.substr(0, i_pcd);
 	// The part after
-	auto end = p.substr(i_pcd + 2);
+	// auto end = p.substr(i_pcd + 2);
+	constexpr std::string_view end = ".h5";
 	// Construct the path without '%d'
 	std::string basename{beginning};
 	basename += end;
@@ -254,7 +259,10 @@ namespace hemelb::extraction
     void LocalPropertyOutput::Write(unsigned long timestepNumber, unsigned long totalSteps)
     {
         // Don't write if we shouldn't this iteration.
-        if (!ShouldWrite(timestepNumber))
+        if (!ShouldWrite(timestepNumber))// timestepNumber % outputSpec.frequency != 0)
+		{
+			return;
+		}
         {
             return;
         }
