@@ -5,8 +5,8 @@ module purge
 module use /mnt/lustre/e1000/home/y07/shared/cirrus-modulefiles
 module load epcc/setup-env
 
-module unload intel-20.4/compilers  # 先卸载 Intel 编译器包
-module unload intel-20.4/cc intel-20.4/fc  # 再卸载 Intel C 和 Fortran 编译器
+module unload intel-20.4/compilers   
+module unload intel-20.4/cc intel-20.4/fc  # unload old version Intel compilers
 module unload gcc  # unload old version GCC
 module unload hdf5parallel
 
@@ -20,8 +20,10 @@ module load ctemplate/2.4
 module load parmetis/4.0.3
 module load tinyxml/2.6.2
 module load catch2/2.13.6
+module load intel-20.4/cc intel-20.4/fc
 ## NEW: Load HDF5 module (compatible with GCC 12.3.0) 
-module load hdf5parallel/1.14.1-2_cuda118_ompi414
+# module load hdf5parallel/1.14.1-2_cuda118_ompi414
+module load hdf5parallel/1.14.3-intel20-impi20 
 
 ## paths
 source=/work/m24oc/m24oc/s2450341/hemelb/Code
@@ -40,20 +42,6 @@ cmake -S $source -B $build \
   -DHDF5_INCLUDE_DIR=/work/y07/shared/cirrus-software/hdf5parallel/1.14.3-gcc10.2.0-ompi4.1.6/include \
   -DHDF5_LIBRARY=/work/y07/shared/cirrus-software/hdf5parallel/1.14.3-gcc10.2.0-ompi4.1.6/lib/libhdf5.so \
   -DHDF5_HL_LIBRARY=/work/y07/shared/cirrus-software/hdf5parallel/1.14.3-gcc10.2.0-ompi4.1.6/lib/libhdf5_hl.so
-# cmake -S $source -B $build \
-#   -DCMAKE_BUILD_TYPE=Release \
-#   -DCMAKE_INSTALL_PREFIX=$install \
-#   -DHEMELB_BUILD_TESTS=OFF \
-  # -DHDF5_INCLUDE_DIR=/work/y07/shared/cirrus-software/hdf5parallel/1.14.1-2-cuda11.8-ompi4.1.4/include \
-  # -DHDF5_LIBRARY=/work/y07/shared/cirrus-software/hdf5parallel/1.14.1-2-cuda11.8-ompi4.1.4/lib/libhdf5.so \
-  # -DHDF5_HL_LIBRARY=/work/y07/shared/cirrus-software/hdf5parallel/1.14.1-2-cuda11.8-ompi4.1.4/lib/libhdf5_hl.so
-
-# cmake -S $source -B $build \
-#   -DCMAKE_BUILD_TYPE=Release \
-#   -DCMAKE_INSTALL_PREFIX=$install \
-#   -DHDF5_INCLUDE_DIR=/work/y07/shared/cirrus-software/hdf5parallel/1.14.1-2-cuda11.8-ompi4.1.4/include \
-#   -DHDF5_LIBRARY=/work/y07/shared/cirrus-software/hdf5parallel/1.14.1-2-cuda11.8-ompi4.1.4/lib/libhdf5.so \
-#   -DHDF5_HL_LIBRARY=/work/y07/shared/cirrus-software/hdf5parallel/1.14.1-2-cuda11.8-ompi4.1.4/lib/libhdf5_hl.so
 
 ## Configure
 # cmake -S $source -B $build -DCMAKE_BUILD_TYPE=Release
