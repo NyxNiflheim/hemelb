@@ -1,27 +1,33 @@
 // LocalPropertyHdf5Output.h
+#include "extraction/LocalPropertyOutput.h"
+#include "hdf5.h"
 #pragma once
 #ifdef USE_HDF5
-#include "LocalPropertyOutputBase.h"
-#include <hdf5.h>
 
-namespace hemelb::io {
+namespace hemelb::extraction 
+{
+class LocalPropertyHdf5Output final : public LocalPropertyHdf5Output
+{
+  public:
+    LocalPropertyHdf5Output(IterableDataSource& dataSource,
+                            const PropertyOutputFile& outputSpec,
+                            const net::IOCommunicator& ioComms);
+    ~LocalPropertyHdf5Output();
 
-class LocalPropertyHdf5Output final : public LocalPropertyOutputBase {
-public:
-  LocalPropertyHdf5Output(IterableDataSource& src,
-                          const PropertyOutputFile& spec,
-                          const net::IOCommunicator& comms);
+    void Write(unsigned long timestepNumber, unsigned long totalStep) override;
+    // Close() in ~LocalPropertyHdf5Output
 
-  void StartFile(const std::string& fn) override;
-  void Write(unsigned long ts, unsigned long total) override;
-  void Close() override;
+  private:
+    void StartFile(const std::string& fn) override;
+    void CreateCompoundType();
+    MPI_Comm mpi_comm;
 
-private:
-  MPI_Comm comm_;
-  hid_t file_      = -1;
-  hid_t dset_      = -1;
-  hid_t memType_   = -1;
-  hid_t fileSpace_ = -1;
+    // HDF5 handles
+    hid_t file_id      = -1;
+    hid_t dataset_id   = -1;
+    hid_t memSpace_id  = -1;
+    hid_t fileSpace_id = -1;
+    hid_t compound_type_id = -1;
 };
-} // namespace hemelb::io
+}
 #endif // USE_HDF5
