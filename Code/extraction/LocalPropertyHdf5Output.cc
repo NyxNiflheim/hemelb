@@ -5,6 +5,8 @@
 
 // LocalPropertyHdf5Output.cc
 // In extraction/LocalPropertyHdf5Output.cc
+// one hdf5 file, group, separate datasets, and XDMF
+
 #ifdef USE_HDF5
 
 #include "extraction/LocalPropertyHdf5Output.h"
@@ -28,19 +30,8 @@ inline herr_t h5_check(herr_t err, const char* file, int line) {
 }
 
 namespace {
-    // formatting helper function
-    template <typename... Ts>
-    std::string safe_fmt(std::string const& pattern, Ts... args) {
-        int sz = std::snprintf(nullptr, 0, pattern.c_str(), args...);
-        if (sz < 0) throw std::runtime_error("Formatting error");
-        std::string ans(sz + 1, '\0');
-        std::snprintf(ans.data(), ans.size(), pattern.c_str(), args...);
-        ans.pop_back();
-        return ans;
-    }
-    
-    // writes a dataset to the HDF5 file
-    void WriteDataset(hid_t group_id, const std::string& name, const std::vector<double>& buffer, 
+    // parallel write dataset helper function
+    void WriteDataset(hid_t loc_id, const std::string& name, const std::vector<double>& buffer, 
                       hsize_t global_rows, hsize_t local_rows, unsigned field_len, 
                       const hemelb::net::IOCommunicator& comms, MPI_Comm mpi_comm) {
         
@@ -48,7 +39,7 @@ namespace {
         hid_t filespace_id = H5Screate_simple(2, global_dims, NULL);
         H5_CHECK(filespace_id);
         
-        hid_t dataset_id = H5Dcreate2(group_id, name.c_str(), H5T_NATIVE_DOUBLE, filespace_id, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        hid_t dataset_id = H5Dcreate2(loc_id, name.c_str(), H5T_NATIVE_DOUBLE, filespace_id, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
         H5_CHECK(dataset_id);
 
         hsize_t local_dims[2] = {local_rows, field_len};
@@ -76,20 +67,22 @@ namespace hemelb::extraction
   LocalPropertyHdf5Output::LocalPropertyHdf5Output(IterableDataSource& dataSource,
                                                      const PropertyOutputFile& outputSpec,
                                                      const net::IOCommunicator& comms)
-    : LocalPropertyOutput(dataSource, outputSpec, comms), mpi_comm(comms)
-  {
-      std::string_view p = this->outputSpec.filename.native();
-      auto i_pcd = p.rfind(".h5");
-      auto beginning = (i_pcd != std::string_view::npos) ? p.substr(0, i_pcd) : p;
-      
-      output_file_pattern += beginning;
-      output_file_pattern += "_%06ld.h5";
-  }
+    : LocalPropertyOutput(dataSource, outputSpec, comms), mpi_comm(comms) {}
 
-  void LocalPropertyHdf5Output::WriteXDMFFile(const std::string& h5_filename, unsigned long timestep)
+  LocalPropertyHdf5Output::~LocalPropertyHdf5Output()
+  {
+    // before closing the file, write xmf
+    if (file_id >= 0) {
+      WriteXDMFFile();
+      H5Fclose(file_id);
+    }
+  }
+  
+  void LocalPropertyHdf5Output::WriteXDMFFile()
   {
     if (comms.Rank() != 0) return;
     
+    std::string h5_filename = outputSpec.filename.string();
     std::string xmf_filename = h5_filename;
     size_t pos = xmf_filename.rfind(".h5");
     if (pos != std::string::npos) {
@@ -106,20 +99,27 @@ namespace hemelb::extraction
     xmf_file << "<!DOCTYPE Xdmf SYSTEM \"Xdmf.dtd\" []>\n";
     xmf_file << "<Xdmf Version=\"3.0\">\n";
     xmf_file << "  <Domain>\n";
-    xmf_file << "    <Grid Name=\"HemeLB Grid\" GridType=\"Uniform\">\n";
-    xmf_file << "      <Time Value=\"" << timestep << "\"/>\n";
-    xmf_file << "      <Topology TopologyType=\"Polyvertex\" NumberOfElements=\"" << global_site_count << "\"/>\n";
-    xmf_file << "      <Geometry GeometryType=\"XYZ\">\n";
-    xmf_file << "        <DataItem Format=\"HDF\" Dimensions=\"" << global_site_count << " 3\" DataType=\"Float\" Precision=\"8\">" << h5_basename << ":/geometry</DataItem>\n";
-    xmf_file << "      </Geometry>\n";
+    xmf_file << "    <Grid Name=\"HemeLB Collection\" GridType=\"Collection\" CollectionType=\"Temporal\">\n";
 
-    for (const auto& field : outputSpec.fields) {
-        unsigned field_len = GetFieldLength(field.src);
-        std::string type = (field_len > 1) ? "Vector" : "Scalar";
-        xmf_file << "      <Attribute Name=\"" << field.name << "\" AttributeType=\"" << type << "\" Center=\"Node\">\n";
-        xmf_file << "        <DataItem Format=\"HDF\" Dimensions=\"" << global_site_count << " " << field_len << "\" DataType=\"Float\" Precision=\"8\">" << h5_basename << ":/" << field.name << "</DataItem>\n";
-        xmf_file << "      </Attribute>\n";
+    // Traverse all written timesteps, write each as a grid
+    for (unsigned long ts : written_timesteps) {
+        xmf_file << "      <Grid Name=\"step_" << ts << "\" GridType=\"Uniform\">\n";
+        xmf_file << "        <Time Value=\"" << ts << "\"/>\n";
+        xmf_file << "        <Topology TopologyType=\"Polyvertex\" NumberOfElements=\"" << global_site_count << "\"/>\n";
+        xmf_file << "        <Geometry GeometryType=\"XYZ\">\n";
+        xmf_file << "          <DataItem Format=\"HDF\" Dimensions=\"" << global_site_count << " 3\" DataType=\"Float\" Precision=\"8\">" << h5_basename << ":/step_" << ts << "/geometry</DataItem>\n";
+        xmf_file << "        </Geometry>\n";
+
+        for (const auto& field : outputSpec.fields) {
+            unsigned field_len = GetFieldLength(field.src);
+            std::string type = (field_len > 1) ? "Vector" : "Scalar";
+            xmf_file << "        <Attribute Name=\"" << field.name << "\" AttributeType=\"" << type << "\" Center=\"Node\">\n";
+            xmf_file << "          <DataItem Format=\"HDF\" Dimensions=\"" << global_site_count << " " << field_len << "\" DataType=\"Float\" Precision=\"8\">" << h5_basename << ":/step_" << ts << "/" << field.name << "</DataItem>\n";
+            xmf_file << "        </Attribute>\n";
+        }
+        xmf_file << "      </Grid>\n";
     }
+
     xmf_file << "    </Grid>\n";
     xmf_file << "  </Domain>\n";
     xmf_file << "</Xdmf>\n";
@@ -129,24 +129,30 @@ namespace hemelb::extraction
   void LocalPropertyHdf5Output::Write(unsigned long timestepNumber, unsigned long totalSteps)
   {
     if (!ShouldWrite(timestepNumber)) return;
+    
+    // if first time writing, create file
+    if (file_id < 0) {
+        hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
+        H5_CHECK(H5Pset_fapl_mpio(fapl, mpi_comm, MPI_INFO_NULL));
+        file_id = H5Fcreate(outputSpec.filename.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, fapl);
+        H5_CHECK(H5Pclose(fapl));
+    }
+    
+    written_timesteps.push_back(timestepNumber);
 
-    std::string current_h5_filename = safe_fmt(output_file_pattern, 6, timestepNumber);
+    // create group for this timestep
+    std::string group_name = "step_" + std::to_string(timestepNumber);
+    hid_t group_id = H5Gcreate(file_id, group_name.c_str(), H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    H5_CHECK(group_id);
     
-    hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
-    H5_CHECK(fapl);
-    H5_CHECK(H5Pset_fapl_mpio(fapl, mpi_comm, MPI_INFO_NULL));
-    hid_t file_id = H5Fcreate(current_h5_filename.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, fapl);
-    H5_CHECK(H5Pclose(fapl));
-    
+    // Get dataset
     std::vector<double> coords_buffer;
     coords_buffer.reserve(local_site_count * 3);
-    
     std::vector<std::vector<double>> field_buffers(outputSpec.fields.size());
     for(size_t i = 0; i < outputSpec.fields.size(); ++i) {
         field_buffers[i].reserve(local_site_count * GetFieldLength(outputSpec.fields[i].src));
     }
-
-    // traverse the data only once
+    // One traverse get all datasets
     dataSource.Reset();
     while (dataSource.ReadNext()) {
       if (outputSpec.geometry->Include(dataSource, dataSource.GetPosition())) {
@@ -156,12 +162,11 @@ namespace hemelb::extraction
         coords_buffer.push_back(static_cast<double>(pos.y()));
         coords_buffer.push_back(static_cast<double>(pos.z()));
 
-        // Get and check vadidity of all fields
         for (size_t i = 0; i < outputSpec.fields.size(); ++i) {
           std::visit([&](auto&& src_type) {
              if constexpr (std::is_same_v<std::decay_t<decltype(src_type)>, source::Pressure>) {
                 double val = dataSource.GetPressure();
-                field_buffers[i].push_back(std::isinf(val) ? -1.0 : val);       // store in buffer
+                field_buffers[i].push_back(std::isinf(val) ? -1.0 : val);
              } else if constexpr (std::is_same_v<std::decay_t<decltype(src_type)>, source::Velocity>) {
                 const auto& vel = dataSource.GetVelocity();
                 field_buffers[i].push_back(std::isinf(vel.x()) ? 0.0 : vel.x());
@@ -175,19 +180,15 @@ namespace hemelb::extraction
         }
       }
     }
-    // Write dataset once all collected
-    WriteDataset(file_id, "geometry", coords_buffer, global_site_count, local_site_count, 3, comms, mpi_comm);
-
+    
+    // write datasets once gathered
+    WriteDataset(group_id, "geometry", coords_buffer, global_site_count, local_site_count, 3, comms, mpi_comm);
     for (size_t i = 0; i < outputSpec.fields.size(); ++i) {
         const auto& field_spec = outputSpec.fields[i];
-        WriteDataset(file_id, field_spec.name, field_buffers[i], global_site_count, local_site_count, GetFieldLength(field_spec.src), comms, mpi_comm);
+        WriteDataset(group_id, field_spec.name, field_buffers[i], global_site_count, local_site_count, GetFieldLength(field_spec.src), comms, mpi_comm);
     }
 
-    H5_CHECK(H5Fclose(file_id));
-    
-    WriteXDMFFile(current_h5_filename, timestepNumber);
+    H5_CHECK(H5Gclose(group_id));
   }
 }
 #endif
-
-

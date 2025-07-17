@@ -5,6 +5,8 @@
 
 // LocalPropertyHdf5Output.h
 // In extraction/LocalPropertyHdf5Output.h
+// one hdf5 file, group, separate datasets, and XDMF
+
 #pragma once
 
 #ifdef USE_HDF5
@@ -18,29 +20,28 @@ namespace hemelb
 {
   namespace extraction
   {
-    class VtkPropertyOutput; // Forward declaration for friendship
-
     class LocalPropertyHdf5Output final : public LocalPropertyOutput
     {
-      // Give VtkPropertyOutput friend access to reuse data gathering logic
-      friend class VtkPropertyOutput;
-
     public:
       LocalPropertyHdf5Output(IterableDataSource& dataSource,
                               const PropertyOutputFile& outputSpec,
                               const net::IOCommunicator& ioComms);
       
-      ~LocalPropertyHdf5Output() = default;
+      ~LocalPropertyHdf5Output();
       
       void Write(unsigned long timestepNumber, unsigned long totalSteps) override;
 
     private:
-      void WriteXDMFFile(const std::string& h5_filename, unsigned long timestep);
-
+      // Writes the XDMF file for the HDF5 output.
+      void WriteXDMFFile();
+      
       MPI_Comm mpi_comm;
-      std::string output_file_pattern;
+    
+      hid_t file_id = -1;
+      
+      // vector for written timesteps
+      std::vector<unsigned long> written_timesteps;
     };
   }
 }
-
 #endif // USE_HDF5
