@@ -4,40 +4,43 @@
 // license in the file LICENSE.
 
 // LocalPropertyHdf5Output.h
-#include "extraction/LocalPropertyOutput.h"
-#include "hdf5.h"
-#include <vector>
+// In extraction/LocalPropertyHdf5Output.h
 #pragma once
+
 #ifdef USE_HDF5
+
+#include "extraction/LocalPropertyOutput.h"
+#include <hdf5.h>
+#include <string>
+#include <vector>
+
 namespace hemelb
 {
   namespace extraction
   {
+    class VtkPropertyOutput; // Forward declaration for friendship
+
     class LocalPropertyHdf5Output final : public LocalPropertyOutput
     {
+      // Give VtkPropertyOutput friend access to reuse data gathering logic
+      friend class VtkPropertyOutput;
+
     public:
       LocalPropertyHdf5Output(IterableDataSource& dataSource,
                               const PropertyOutputFile& outputSpec,
                               const net::IOCommunicator& ioComms);
-      ~LocalPropertyHdf5Output();
+      
+      ~LocalPropertyHdf5Output() = default;
       
       void Write(unsigned long timestepNumber, unsigned long totalSteps) override;
 
     private:
-      void WriteXDMFFile(unsigned long timestep);
-      void CreateCompoundType();
-      
-      // HDF5 MPI communicator
+      void WriteXDMFFile(const std::string& h5_filename, unsigned long timestep);
+
       MPI_Comm mpi_comm;
-      
-      // HDF5 handles
-      hid_t file_id = -1;
-      hid_t dataset_id = -1;
-      hid_t filespace_id = -1;
-      hid_t compound_type_id = -1;
-      size_t compound_type_size = 0;       
-      std::vector<size_t> field_offsets; 
+      std::string output_file_pattern;
     };
   }
 }
+
 #endif // USE_HDF5
