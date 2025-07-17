@@ -23,10 +23,15 @@ namespace hemelb
         // Create the appropriate output type based on the format.
         if (format == "hdf5")
         {
+          #ifdef USE_HDF5
           //create HDF5 output
           localPropertyOutputs.push_back(new LocalPropertyHdf5Output(dataSource,
                                                                      currentOutputSpec,
                                                                      ioComms));
+          #else
+          throw Exception() << "HDF5 output was requested in the XML configuration, but HDF5 support is not enabled in this build."
+                            << "Please recompile with -DUSE_HDF5=ON.";
+          #endif
         }
         else if(format == "xdr")
         {

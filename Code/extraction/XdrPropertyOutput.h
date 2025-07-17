@@ -13,6 +13,7 @@ namespace hemelb::extraction
     XdrPropertyOutput(IterableDataSource& dataSource,
                       const PropertyOutputFile& outputSpec,
                       const net::IOCommunicator& ioComms);
+    ~XdrPropertyOutput() = default;
 
     void Write(unsigned long timestepNumber, unsigned long totalSteps) override;
 
