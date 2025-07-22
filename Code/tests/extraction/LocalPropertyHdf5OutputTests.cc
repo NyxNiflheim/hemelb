@@ -1,10 +1,15 @@
+// This file is part of HemeLB and is Copyright (C)
+// the HemeLB team and/or their institutions, as detailed in the
+// file AUTHORS. This software is provided under the terms of the
+// license in the file LICENSE.
+
 // In hemelb/Code/tests/extraction/LocalPropertyHdf5OutputTests.cc
 
 #include <catch2/catch.hpp>
 #include <vector>
 #include <string>
 #include <cstdio>
-#include <iostream> // 用于打印调试信息
+#include <iostream>
 
 // HemeLB includes
 #include "extraction/LocalPropertyHdf5Output.h"
@@ -52,8 +57,7 @@ namespace hemelb
       bool mismatch_found = false;
       for (size_t i = 0; i < read_pressures.size(); ++i) {
           if (read_pressures[i] != Approx(expected_pressures[i])) {
-              // --- 关键修正：按照您的建议，打印详细的对比信息 ---
-              if (!mismatch_found) { // 只打印一次头部信息
+              if (!mismatch_found) { // only print mismatch details once
                   std::cout << "\n--- Mismatch Details for 'pressure' ---\n";
                   mismatch_found = true;
               }
@@ -61,7 +65,7 @@ namespace hemelb
                         << ", expected = " << expected_pressures[i] << std::endl;
           }
       }
-      // 最终断言，如果发现不匹配，测试将在这里失败并显示Catch2的详细信息
+      // if mismatch was found, print a summary
       REQUIRE_THAT(read_pressures, Catch::Matchers::Approx(expected_pressures));
 
       H5Dclose(dset_id);
@@ -81,12 +85,12 @@ namespace hemelb
       }
       Comms().Barrier();
       
-      // 使用固定的随机种子，确保测试的可重复性
+      // use DummyDataSource for testing
       auto dataSource = std::make_unique<DummyDataSource>(42); 
       
       extraction::PropertyOutputFile spec;
       spec.filename = tempH5FileName;
-      spec.frequency = 100; // 只在第100步写一次，简化测试
+      spec.frequency = 100; // only write every 100 steps
       spec.geometry = util::make_clone_ptr<extraction::WholeGeometrySelector>();
 
       extraction::OutputField pressure_field;
