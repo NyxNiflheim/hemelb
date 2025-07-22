@@ -45,24 +45,22 @@ namespace hemelb::extraction
   }
 
   void LocalPropertyHdf5Output::CreateCompoundType() {
-    // 计算内存布局
+    // Pass 1: 计算内存布局
     size_t current_offset = 0;
     field_offsets.clear();
-
-    field_offsets.push_back(current_offset); // i offset
-    current_offset += sizeof(uint32_t);
-    field_offsets.push_back(current_offset); // j offset
-    current_offset += sizeof(uint32_t);
-    field_offsets.push_back(current_offset); // k offset
-    current_offset += sizeof(uint32_t);
+    
+    field_offsets.push_back(current_offset); current_offset += sizeof(uint32_t); // i
+    field_offsets.push_back(current_offset); current_offset += sizeof(uint32_t); // j
+    field_offsets.push_back(current_offset); current_offset += sizeof(uint32_t); // k
     
     for (const auto& field_spec : outputSpec.fields) {
       field_offsets.push_back(current_offset);
-      current_offset += sizeof(double) * GetFieldLength(field_spec.src);
+      // 根据typecode来累加大小
+      current_offset += GetFieldLength(field_spec.src) * std::visit([](auto t){ return sizeof(decltype(t)); }, field_spec.typecode);
     }
     compound_type_size = current_offset;
 
-    // create the compound type
+    // Pass 2: 创建HDF5复合类型
     compound_type_id = H5Tcreate(H5T_COMPOUND, compound_type_size); 
 
     H5Tinsert(compound_type_id, "i", field_offsets[0], H5T_NATIVE_UINT32);
@@ -72,14 +70,22 @@ namespace hemelb::extraction
     for (size_t i = 0; i < outputSpec.fields.size(); ++i) {
       const auto& field_spec = outputSpec.fields[i];
       unsigned field_len = GetFieldLength(field_spec.src);
-      hid_t field_type = H5T_NATIVE_DOUBLE;
       size_t member_offset = field_offsets[i + 3];
 
+      // 访问variant，为每种类型选择正确的HDF5类型
+      hid_t hdf_type = std::visit([](auto t) -> hid_t {
+          using T = decltype(t);
+          if constexpr (std::is_same_v<T, int>) return H5T_NATIVE_INT;
+          if constexpr (std::is_same_v<T, float>) return H5T_NATIVE_FLOAT;
+          if constexpr (std::is_same_v<T, double>) return H5T_NATIVE_DOUBLE;
+          return H5T_NATIVE_VOID; // Should not happen
+      }, field_spec.typecode);
+
       if (field_len == 1) {
-        H5Tinsert(compound_type_id, field_spec.name.c_str(), member_offset, field_type);
+        H5Tinsert(compound_type_id, field_spec.name.c_str(), member_offset, hdf_type);
       } else {
         hsize_t dims[1] = {field_len};
-        hid_t array_tid = H5Tarray_create(field_type, 1, dims);
+        hid_t array_tid = H5Tarray_create(hdf_type, 1, dims);
         H5Tinsert(compound_type_id, field_spec.name.c_str(), member_offset, array_tid);
         H5Tclose(array_tid);
       }
@@ -147,7 +153,9 @@ namespace hemelb::extraction
         file_id = H5Fcreate(outputSpec.filename.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, fapl);
         H5_CHECK(H5Pclose(fapl));
         CreateCompoundType();
-    } else if (std::holds_alternative<multi_timestep_file>(outputSpec.ts_mode)) { // not the first write, reopen  file
+    } 
+    // 如果不是第一次写，需要以读写模式重新打开文件
+    if (!written_timesteps.empty()) {
         hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
         H5_CHECK(H5Pset_fapl_mpio(fapl, mpi_comm, MPI_INFO_NULL));
         file_id = H5Fopen(outputSpec.filename.c_str(), H5F_ACC_RDWR, fapl);
@@ -180,20 +188,22 @@ namespace hemelb::extraction
           const auto& field_spec = outputSpec.fields[i];
           char* field_ptr = buffer_ptr + field_offsets[i + 3];
           std::visit([&](auto&& src_type) {
-            double* dest = reinterpret_cast<double*>(field_ptr);
-             if constexpr (std::is_same_v<std::decay_t<decltype(src_type)>, source::Pressure>) {
-                double val = dataSource.GetPressure();
-                dest[0] = std::isinf(val) ? -1.0 : val;
-             } else if constexpr (std::is_same_v<std::decay_t<decltype(src_type)>, source::Velocity>) {
-                const auto& vel = dataSource.GetVelocity();
-                dest[0] = std::isinf(vel.x()) ? 0.0 : vel.x();
-                dest[1] = std::isinf(vel.y()) ? 0.0 : vel.y();
-                dest[2] = std::isinf(vel.z()) ? 0.0 : vel.z();
-             } else if constexpr (std::is_same_v<std::decay_t<decltype(src_type)>, source::ShearStress>) {
-                double val = dataSource.GetShearStress();
-                dest[0] = std::isinf(val) ? -1.0 : val;
+            using T = decltype(type_tag);
+            T* dest = reinterpret_cast<T*>(field_ptr);
+
+             if constexpr (std::is_same_v<T, double>) {
+                 if constexpr (std::is_same_v<std::decay_t<decltype(field_spec.src)>, source::Velocity>) {
+                    const auto& vel = dataSource.GetVelocity();
+                    dest[0] = std::isinf(vel.x()) ? 0.0 : vel.x();
+                    dest[1] = std::isinf(vel.y()) ? 0.0 : vel.y();
+                    dest[2] = std::isinf(vel.z()) ? 0.0 : vel.z();
+                 }
+             }else if constexpr (std::is_same_v<T, int>) {
+                 if constexpr (std::is_same_v<std::decay_t<decltype(field_spec.src)>, source::MpiRank>) {
+                    dest[0] = comms.Rank();
+                 }
              }
-          }, field_spec.src);
+          }, field_spec.typecode);
         }
         buffer_ptr += compound_type_size;
       }
