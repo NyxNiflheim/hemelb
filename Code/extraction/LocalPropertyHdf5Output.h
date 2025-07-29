@@ -7,6 +7,8 @@
 // In extraction/LocalPropertyHdf5Output.h
 // one hdf5 file, group, separate datasets, and XDMF
 
+// suitable data types for HDF5
+
 #pragma once
 
 #ifdef USE_HDF5
@@ -15,6 +17,7 @@
 #include <hdf5.h>
 #include <string>
 #include <vector>
+#include <variant> // for std::variant
 
 namespace hemelb
 {
@@ -32,16 +35,23 @@ namespace hemelb
       void Write(unsigned long timestepNumber, unsigned long totalSteps) override;
 
     private:
-      // Writes the XDMF file for the HDF5 output.
       void WriteXDMFFile();
-      
+
+      // define a variant type to hold all possible vector data types
+      using BufferVariant = std::variant<
+          std::vector<int>,
+          std::vector<float>,
+          std::vector<double>,
+          std::vector<unsigned int>,
+          std::vector<long int>,
+          std::vector<long unsigned int>
+      >;
+
       MPI_Comm mpi_comm;
-    
       hid_t file_id = -1;
-      
-      // vector for written timesteps
       std::vector<unsigned long> written_timesteps;
     };
   }
 }
+
 #endif // USE_HDF5
