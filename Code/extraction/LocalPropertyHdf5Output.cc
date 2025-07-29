@@ -3,9 +3,8 @@
 // file AUTHORS. This software is provided under the terms of the
 // license in the file LICENSE.
 
-// LocalPropertyHdf5Output.cc
 // In extraction/LocalPropertyHdf5Output.cc
-// one hdf5 file, group, separate datasets, and XDMF
+// suitable data types for HDF5
 
 #ifdef USE_HDF5
 
@@ -17,8 +16,9 @@
 #include <cmath>
 #include <stdexcept>
 #include <filesystem>
+#include <variant>
 
-// check HDF5 error handling
+// Hdf5 check
 #define H5_CHECK(err) (h5_check((err), __FILE__, __LINE__))
 inline herr_t h5_check(herr_t err, const char* file, int line) {
     if (err < 0) {
@@ -30,16 +30,16 @@ inline herr_t h5_check(herr_t err, const char* file, int line) {
 }
 
 namespace {
-    // parallel write dataset helper function
-    void WriteDataset(hid_t loc_id, const std::string& name, const std::vector<double>& buffer, 
-                      hsize_t global_rows, hsize_t local_rows, unsigned field_len, 
+    template<typename T>
+    void WriteDataset(hid_t group_id, const std::string& name, const std::vector<T>& buffer, 
+                      hid_t hdf_type, hsize_t global_rows, hsize_t local_rows, unsigned field_len, 
                       const hemelb::net::IOCommunicator& comms, MPI_Comm mpi_comm) {
         
         hsize_t global_dims[2] = {global_rows, field_len};
         hid_t filespace_id = H5Screate_simple(2, global_dims, NULL);
         H5_CHECK(filespace_id);
         
-        hid_t dataset_id = H5Dcreate2(loc_id, name.c_str(), H5T_NATIVE_DOUBLE, filespace_id, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        hid_t dataset_id = H5Dcreate2(group_id, name.c_str(), hdf_type, filespace_id, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
         H5_CHECK(dataset_id);
 
         hsize_t local_dims[2] = {local_rows, field_len};
@@ -53,7 +53,7 @@ namespace {
         hid_t dxpl = H5Pcreate(H5P_DATASET_XFER);
         H5_CHECK(dxpl);
         H5_CHECK(H5Pset_dxpl_mpio(dxpl, H5FD_MPIO_COLLECTIVE));
-        H5_CHECK(H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, memspace_id, filespace_id, dxpl, buffer.data()));
+        H5_CHECK(H5Dwrite(dataset_id, hdf_type, memspace_id, filespace_id, dxpl, buffer.data()));
         
         H5_CHECK(H5Pclose(dxpl));
         H5_CHECK(H5Sclose(memspace_id));
@@ -69,15 +69,13 @@ namespace hemelb::extraction
                                                      const net::IOCommunicator& comms)
     : LocalPropertyOutput(dataSource, outputSpec, comms), mpi_comm(comms) {}
 
-  LocalPropertyHdf5Output::~LocalPropertyHdf5Output()
-  {
-    // before closing the file, write xmf
+  LocalPropertyHdf5Output::~LocalPropertyHdf5Output() {
     if (file_id >= 0) {
       WriteXDMFFile();
       H5Fclose(file_id);
     }
   }
-  
+
   void LocalPropertyHdf5Output::WriteXDMFFile()
   {
     if (comms.Rank() != 0) return;
@@ -101,7 +99,6 @@ namespace hemelb::extraction
     xmf_file << "  <Domain>\n";
     xmf_file << "    <Grid Name=\"HemeLB Collection\" GridType=\"Collection\" CollectionType=\"Temporal\">\n";
 
-    // Traverse all written timesteps, write each as a grid
     for (unsigned long ts : written_timesteps) {
         xmf_file << "      <Grid Name=\"step_" << ts << "\" GridType=\"Uniform\">\n";
         xmf_file << "        <Time Value=\"" << ts << "\"/>\n";
@@ -113,8 +110,22 @@ namespace hemelb::extraction
         for (const auto& field : outputSpec.fields) {
             unsigned field_len = GetFieldLength(field.src);
             std::string type = (field_len > 1) ? "Vector" : "Scalar";
+            
+            std::string precision_str = "4";
+            std::string datatype_str = std::visit([](auto t) -> std::string {
+                using T = decltype(t);
+                if constexpr (std::is_same_v<T, int> || std::is_same_v<T, unsigned int> || std::is_same_v<T, long int> || std::is_same_v<T, long unsigned int>) return "Int";
+                if constexpr (std::is_same_v<T, float>) return "Float";
+                if constexpr (std::is_same_v<T, double>) return "Float";
+                return "Unknown";
+            }, field.typecode);
+
+            if (datatype_str == "Float") {
+                 precision_str = std::visit([](auto t) { using T = decltype(t); return std::to_string(sizeof(T)); }, field.typecode);
+            }
+
             xmf_file << "        <Attribute Name=\"" << field.name << "\" AttributeType=\"" << type << "\" Center=\"Node\">\n";
-            xmf_file << "          <DataItem Format=\"HDF\" Dimensions=\"" << global_site_count << " " << field_len << "\" DataType=\"Float\" Precision=\"8\">" << h5_basename << ":/step_" << ts << "/" << field.name << "</DataItem>\n";
+            xmf_file << "          <DataItem Format=\"HDF\" Dimensions=\"" << global_site_count << " " << field_len << "\" DataType=\"" << datatype_str << "\" Precision=\"" << precision_str << "\">" << h5_basename << ":/step_" << ts << "/" << field.name << "</DataItem>\n";
             xmf_file << "        </Attribute>\n";
         }
         xmf_file << "      </Grid>\n";
@@ -126,11 +137,9 @@ namespace hemelb::extraction
     xmf_file.close();
   }
 
-  void LocalPropertyHdf5Output::Write(unsigned long timestepNumber, unsigned long totalSteps)
-  {
+  void LocalPropertyHdf5Output::Write(unsigned long timestepNumber, unsigned long totalSteps) {
     if (!ShouldWrite(timestepNumber)) return;
     
-    // if first time writing, create file
     if (file_id < 0) {
         hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
         H5_CHECK(H5Pset_fapl_mpio(fapl, mpi_comm, MPI_INFO_NULL));
@@ -140,55 +149,63 @@ namespace hemelb::extraction
     
     written_timesteps.push_back(timestepNumber);
 
-    // create group for this timestep
     std::string group_name = "step_" + std::to_string(timestepNumber);
     hid_t group_id = H5Gcreate(file_id, group_name.c_str(), H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
     H5_CHECK(group_id);
     
-    // Get dataset
-    std::vector<double> coords_buffer;
-    coords_buffer.reserve(local_site_count * 3);
-    std::vector<std::vector<double>> field_buffers(outputSpec.fields.size());
-    for(size_t i = 0; i < outputSpec.fields.size(); ++i) {
-        field_buffers[i].reserve(local_site_count * GetFieldLength(outputSpec.fields[i].src));
-    }
-    // One traverse get all datasets
+    // get buffer sizes
+    std::vector<uint32_t> coords_buffer;
+    std::vector<float> pressure_buffer;
+    std::vector<double> velocity_buffer;
+    std::vector<float> shearstress_buffer;
+    
+    // traverse once and collect data
     dataSource.Reset();
     while (dataSource.ReadNext()) {
       if (outputSpec.geometry->Include(dataSource, dataSource.GetPosition())) {
-        // Get position
         const auto& pos = dataSource.GetPosition();
-        coords_buffer.push_back(static_cast<double>(pos.x()));
-        coords_buffer.push_back(static_cast<double>(pos.y()));
-        coords_buffer.push_back(static_cast<double>(pos.z()));
+        coords_buffer.push_back(pos.x());
+        coords_buffer.push_back(pos.y());
+        coords_buffer.push_back(pos.z());
 
-        for (size_t i = 0; i < outputSpec.fields.size(); ++i) {
-          std::visit([&](auto&& src_type) {
-             if constexpr (std::is_same_v<std::decay_t<decltype(src_type)>, source::Pressure>) {
+        for (const auto& field_spec : outputSpec.fields) {
+            if (std::holds_alternative<source::Pressure>(field_spec.src)) {
                 double val = dataSource.GetPressure();
-                field_buffers[i].push_back(std::isinf(val) ? -1.0 : val);
-             } else if constexpr (std::is_same_v<std::decay_t<decltype(src_type)>, source::Velocity>) {
+                pressure_buffer.push_back(static_cast<float>(val));
+                // pressure_buffer.push_back(static_cast<float>((std::isinf(val) || std::isnan(val)) ? -1.0 : val));
+            } else if (std::holds_alternative<source::Velocity>(field_spec.src)) {
                 const auto& vel = dataSource.GetVelocity();
-                field_buffers[i].push_back(std::isinf(vel.x()) ? 0.0 : vel.x());
-                field_buffers[i].push_back(std::isinf(vel.y()) ? 0.0 : vel.y());
-                field_buffers[i].push_back(std::isinf(vel.z()) ? 0.0 : vel.z());
-             } else if constexpr (std::is_same_v<std::decay_t<decltype(src_type)>, source::ShearStress>) {
+                velocity_buffer.push_back(static_cast<double>(vel.x()));
+                velocity_buffer.push_back(static_cast<double>(vel.y()));
+                velocity_buffer.push_back(static_cast<double>(vel.z()));
+                // velocity_buffer.push_back(static_cast<double>((std::isinf(vel.x()) || std::isnan(vel.x())) ? 0.0 : vel.x()));
+                // velocity_buffer.push_back(static_cast<double>((std::isinf(vel.y()) || std::isnan(vel.y())) ? 0.0 : vel.y()));
+                // velocity_buffer.push_back(static_cast<double>((std::isinf(vel.z()) || std::isnan(vel.z())) ? 0.0 : vel.z()));
+            } else if (std::holds_alternative<source::ShearStress>(field_spec.src)) {
                 double val = dataSource.GetShearStress();
-                field_buffers[i].push_back(std::isinf(val) ? -1.0 : val);
-             }
-          }, outputSpec.fields[i].src);
+                shearstress_buffer.push_back(static_cast<float>(val));
+                // shearstress_buffer.push_back(static_cast<float>((std::isinf(val) || std::isnan(val)) ? -1.0 : val));
+            }
         }
       }
     }
+  
+    // 3. 并行写入所有数据集
+    WriteDataset(group_id, "geometry", coords_buffer, H5T_NATIVE_UINT32, global_site_count, local_site_count, 3, comms, mpi_comm);
     
-    // write datasets once gathered
-    WriteDataset(group_id, "geometry", coords_buffer, global_site_count, local_site_count, 3, comms, mpi_comm);
-    for (size_t i = 0; i < outputSpec.fields.size(); ++i) {
-        const auto& field_spec = outputSpec.fields[i];
-        WriteDataset(group_id, field_spec.name, field_buffers[i], global_site_count, local_site_count, GetFieldLength(field_spec.src), comms, mpi_comm);
+    for (const auto& field_spec : outputSpec.fields) {
+        if (std::holds_alternative<source::Pressure>(field_spec.src)) {
+            WriteDataset(group_id, field_spec.name, pressure_buffer, H5T_NATIVE_FLOAT, global_site_count, local_site_count, 1, comms, mpi_comm);
+        } else if (std::holds_alternative<source::Velocity>(field_spec.src)) {
+            WriteDataset(group_id, field_spec.name, velocity_buffer, H5T_NATIVE_DOUBLE, global_site_count, local_site_count, 3, comms, mpi_comm);
+        } else if (std::holds_alternative<source::ShearStress>(field_spec.src)) {
+            WriteDataset(group_id, field_spec.name, shearstress_buffer, H5T_NATIVE_FLOAT, global_site_count, local_site_count, 1, comms, mpi_comm);
+        }
     }
 
     H5_CHECK(H5Gclose(group_id));
+    // H5_CHECK(H5Fclose(file_id));
+    // file_id = -1; // Reset file_id to indicate that the file is closed
   }
 }
 #endif
