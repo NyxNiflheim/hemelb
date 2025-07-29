@@ -5,7 +5,7 @@
 
 // LocalPropertyHdf5Output.cc
 // In extraction/LocalPropertyHdf5Output.cc
-// one hdf5 file, group, separate datasets, and XDMF
+// check hdf5 file, group, separate datasets, and XDMF with mask
 
 #ifdef USE_HDF5
 
@@ -161,20 +161,25 @@ namespace hemelb::extraction
         coords_buffer.push_back(static_cast<double>(pos.x()));
         coords_buffer.push_back(static_cast<double>(pos.y()));
         coords_buffer.push_back(static_cast<double>(pos.z()));
-
+        // push origin data into field_buffers
         for (size_t i = 0; i < outputSpec.fields.size(); ++i) {
           std::visit([&](auto&& src_type) {
              if constexpr (std::is_same_v<std::decay_t<decltype(src_type)>, source::Pressure>) {
                 double val = dataSource.GetPressure();
-                field_buffers[i].push_back(std::isinf(val) ? -1.0 : val);
+                field_buffers[i].push_back(val);
+                // field_buffers[i].push_back(std::isinf(val) ? -1.0 : val);
              } else if constexpr (std::is_same_v<std::decay_t<decltype(src_type)>, source::Velocity>) {
                 const auto& vel = dataSource.GetVelocity();
-                field_buffers[i].push_back(std::isinf(vel.x()) ? 0.0 : vel.x());
-                field_buffers[i].push_back(std::isinf(vel.y()) ? 0.0 : vel.y());
-                field_buffers[i].push_back(std::isinf(vel.z()) ? 0.0 : vel.z());
+                field_buffers[i].push_back(vel.x());
+                field_buffers[i].push_back(vel.y());
+                field_buffers[i].push_back(vel.z());
+                // field_buffers[i].push_back(std::isinf(vel.x()) ? 0.0 : vel.x());
+                // field_buffers[i].push_back(std::isinf(vel.y()) ? 0.0 : vel.y());
+                // field_buffers[i].push_back(std::isinf(vel.z()) ? 0.0 : vel.z());
              } else if constexpr (std::is_same_v<std::decay_t<decltype(src_type)>, source::ShearStress>) {
                 double val = dataSource.GetShearStress();
-                field_buffers[i].push_back(std::isinf(val) ? -1.0 : val);
+                field_buffers[i].push_back(val);
+                // field_buffers[i].push_back(std::isinf(val) ? -1.0 : val);
              }
           }, outputSpec.fields[i].src);
         }
