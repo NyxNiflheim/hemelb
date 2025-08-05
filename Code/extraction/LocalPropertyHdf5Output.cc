@@ -60,6 +60,27 @@ namespace {
         H5_CHECK(H5Dclose(dataset_id));
         H5_CHECK(H5Sclose(filespace_id));
     }
+    // type mapping for HDF5
+    template<typename T>
+    hid_t hdf5_type_from_variant();
+
+    template<>
+    hid_t hdf5_type_from_variant<float>() { return H5T_NATIVE_FLOAT; }
+
+    template<>
+    hid_t hdf5_type_from_variant<double>() { return H5T_NATIVE_DOUBLE; }
+
+    template<>
+    hid_t hdf5_type_from_variant<std::int32_t>() { return H5T_NATIVE_INT32; }
+
+    template<>
+    hid_t hdf5_type_from_variant<std::uint32_t>() { return H5T_NATIVE_UINT32; }
+
+    template<>
+    hid_t hdf5_type_from_variant<std::int64_t>() { return H5T_NATIVE_INT64; }
+
+    template<>
+    hid_t hdf5_type_from_variant<std::uint64_t>() { return H5T_NATIVE_UINT64; }
 }
 
 namespace hemelb::extraction
@@ -76,136 +97,190 @@ namespace hemelb::extraction
     }
   }
 
-  void LocalPropertyHdf5Output::WriteXDMFFile()
-  {
-    if (comms.Rank() != 0) return;
-    
-    std::string h5_filename = outputSpec.filename.string();
-    std::string xmf_filename = h5_filename;
-    size_t pos = xmf_filename.rfind(".h5");
-    if (pos != std::string::npos) {
-        xmf_filename.replace(pos, 3, ".xmf");
-    } else {
-        xmf_filename += ".xmf";
-    }
+  //  WriteXDMFFile for proper data type and precision
+    void LocalPropertyHdf5Output::WriteXDMFFile()
+    {
+        if (comms.Rank() != 0) return;
 
-    std::filesystem::path h5_path(h5_filename);
-    std::string h5_basename = h5_path.filename().string();
-    
-    std::ofstream xmf_file(xmf_filename);
-    xmf_file << "<?xml version=\"1.0\" ?>\n";
-    xmf_file << "<!DOCTYPE Xdmf SYSTEM \"Xdmf.dtd\" []>\n";
-    xmf_file << "<Xdmf Version=\"3.0\">\n";
-    xmf_file << "  <Domain>\n";
-    xmf_file << "    <Grid Name=\"HemeLB Collection\" GridType=\"Collection\" CollectionType=\"Temporal\">\n";
+        using namespace hemelb::extraction;
+        using hemelb::extraction::code::type_to_enum;
+        using hemelb::extraction::code::type_to_size;
 
-    for (unsigned long ts : written_timesteps) {
-        xmf_file << "      <Grid Name=\"step_" << ts << "\" GridType=\"Uniform\">\n";
-        xmf_file << "        <Time Value=\"" << ts << "\"/>\n";
-        xmf_file << "        <Topology TopologyType=\"Polyvertex\" NumberOfElements=\"" << global_site_count << "\"/>\n";
-        xmf_file << "        <Geometry GeometryType=\"XYZ\">\n";
-        xmf_file << "          <DataItem Format=\"HDF\" Dimensions=\"" << global_site_count << " 3\" DataType=\"Float\" Precision=\"8\">" << h5_basename << ":/step_" << ts << "/geometry</DataItem>\n";
-        xmf_file << "        </Geometry>\n";
+        std::string h5_filename = outputSpec.filename.string();
+        std::string xmf_filename = h5_filename;
+        size_t pos = xmf_filename.rfind(".h5");
+        if (pos != std::string::npos)
+            xmf_filename.replace(pos, 3, ".xmf");
+        else
+            xmf_filename += ".xmf";
 
-        for (const auto& field : outputSpec.fields) {
-            unsigned field_len = GetFieldLength(field.src);
-            std::string type = (field_len > 1) ? "Vector" : "Scalar";
-            
-            std::string precision_str = "4";
-            std::string datatype_str = std::visit([](auto t) -> std::string {
-                using T = decltype(t);
-                if constexpr (std::is_same_v<T, int> || std::is_same_v<T, unsigned int> || std::is_same_v<T, long int> || std::is_same_v<T, long unsigned int>) return "Int";
-                if constexpr (std::is_same_v<T, float>) return "Float";
-                if constexpr (std::is_same_v<T, double>) return "Float";
-                return "Unknown";
-            }, field.typecode);
+        std::filesystem::path h5_path(h5_filename);
+        std::string h5_basename = h5_path.filename().string();
 
-            if (datatype_str == "Float") {
-                 precision_str = std::visit([](auto t) { using T = decltype(t); return std::to_string(sizeof(T)); }, field.typecode);
+        std::ofstream xmf_file(xmf_filename);
+        xmf_file << "<?xml version=\"1.0\" ?>\n";
+        xmf_file << "<!DOCTYPE Xdmf SYSTEM \"Xdmf.dtd\" []>\n";
+        xmf_file << "<Xdmf Version=\"3.0\">\n";
+        xmf_file << "  <Domain>\n";
+        xmf_file << "    <Grid Name=\"HemeLB Collection\" GridType=\"Collection\" CollectionType=\"Temporal\">\n";
+
+        for (unsigned long ts : written_timesteps)
+        {
+            xmf_file << "      <Grid Name=\"step_" << ts << "\" GridType=\"Uniform\">\n";
+            xmf_file << "        <Time Value=\"" << ts << "\"/>\n";
+            xmf_file << "        <Topology TopologyType=\"Polyvertex\" NumberOfElements=\"" << global_site_count << "\"/>\n";
+
+            // Geometry
+            xmf_file << "        <Geometry GeometryType=\"XYZ\">\n";
+            xmf_file << "          <DataItem Format=\"HDF\" Dimensions=\"" << global_site_count << " 3\" DataType=\"UInt\" Precision=\"4\">"
+                        << h5_basename << ":/step_" << ts << "/geometry</DataItem>\n";
+            xmf_file << "        </Geometry>\n";
+
+            // Attributes
+            for (const auto& field : outputSpec.fields)
+            {
+                unsigned field_len = GetFieldLength(field.src);
+                std::string attr_type = (field_len > 1) ? "Vector" : "Scalar";
+
+                std::string data_type_str = "Float";
+                std::string precision_str = "4";
+
+                // Determine the data type and precision based on the field typecode
+                auto tc = code::type_to_enum(field.typecode);
+                auto prec = code::type_to_size(field.typecode);
+
+                // Set the data type and precision based on the type code
+                switch (tc) {
+                case io::formats::extraction::TypeCode::FLOAT:
+                case io::formats::extraction::TypeCode::DOUBLE:
+                    data_type_str = "Float";
+                    break;
+                case io::formats::extraction::TypeCode::INT32:
+                case io::formats::extraction::TypeCode::INT64:
+                    data_type_str = "Int";
+                    break;
+                case io::formats::extraction::TypeCode::UINT32:
+                case io::formats::extraction::TypeCode::UINT64:
+                    data_type_str = "UInt";
+                    break;
+                default:
+                    data_type_str = "Unknown";
+                }
+
+                precision_str = std::to_string(prec);
+
+                xmf_file << "        <Attribute Name=\"" << field.name << "\" AttributeType=\"" << attr_type << "\" Center=\"Node\">\n";
+                xmf_file << "          <DataItem Format=\"HDF\" Dimensions=\"" << global_site_count << " " << field_len
+                        << "\" DataType=\"" << data_type_str << "\" Precision=\"" << precision_str << "\">"
+                        << h5_basename << ":/step_" << ts << "/" << field.name << "</DataItem>\n";
+                xmf_file << "        </Attribute>\n";
             }
 
-            xmf_file << "        <Attribute Name=\"" << field.name << "\" AttributeType=\"" << type << "\" Center=\"Node\">\n";
-            xmf_file << "          <DataItem Format=\"HDF\" Dimensions=\"" << global_site_count << " " << field_len << "\" DataType=\"" << datatype_str << "\" Precision=\"" << precision_str << "\">" << h5_basename << ":/step_" << ts << "/" << field.name << "</DataItem>\n";
-            xmf_file << "        </Attribute>\n";
+            xmf_file << "      </Grid>\n";
         }
-        xmf_file << "      </Grid>\n";
+
+        xmf_file << "    </Grid>\n";
+        xmf_file << "  </Domain>\n";
+        xmf_file << "</Xdmf>\n";
+        xmf_file.close();
     }
 
-    xmf_file << "    </Grid>\n";
-    xmf_file << "  </Domain>\n";
-    xmf_file << "</Xdmf>\n";
-    xmf_file.close();
-  }
 
-  void LocalPropertyHdf5Output::Write(unsigned long timestepNumber, unsigned long totalSteps) {
+
+    // Write
+    void LocalPropertyHdf5Output::Write(unsigned long timestepNumber, unsigned long totalSteps)
+    {
     if (!ShouldWrite(timestepNumber)) return;
-    
+
     if (file_id < 0) {
         hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
         H5_CHECK(H5Pset_fapl_mpio(fapl, mpi_comm, MPI_INFO_NULL));
         file_id = H5Fcreate(outputSpec.filename.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, fapl);
         H5_CHECK(H5Pclose(fapl));
     }
-    
+
     written_timesteps.push_back(timestepNumber);
 
     std::string group_name = "step_" + std::to_string(timestepNumber);
     hid_t group_id = H5Gcreate(file_id, group_name.c_str(), H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
     H5_CHECK(group_id);
-    
-    // get buffer sizes
-    std::vector<uint32_t> coords_buffer;
-    std::vector<float> pressure_buffer;
-    std::vector<double> velocity_buffer;
-    std::vector<float> shearstress_buffer;
-    
-    // traverse once and collect data
+
+    std::vector<std::vector<uint32_t>> geometry_data;
+    std::map<std::string, std::vector<char>> field_buffers;
+    std::map<std::string, hid_t> field_types;
+    std::map<std::string, unsigned> field_lengths;
+
     dataSource.Reset();
     while (dataSource.ReadNext()) {
-      if (outputSpec.geometry->Include(dataSource, dataSource.GetPosition())) {
+        if (!outputSpec.geometry->Include(dataSource, dataSource.GetPosition()))
+        continue;
+
         const auto& pos = dataSource.GetPosition();
-        coords_buffer.push_back(pos.x());
-        coords_buffer.push_back(pos.y());
-        coords_buffer.push_back(pos.z());
+        geometry_data.push_back({(uint32_t)pos.x(), (uint32_t)pos.y(), (uint32_t)pos.z()});
 
         for (const auto& field_spec : outputSpec.fields) {
-            if (std::holds_alternative<source::Pressure>(field_spec.src)) {
-                double val = dataSource.GetPressure();
-                pressure_buffer.push_back(static_cast<float>(val));
-                // pressure_buffer.push_back(static_cast<float>((std::isinf(val) || std::isnan(val)) ? -1.0 : val));
-            } else if (std::holds_alternative<source::Velocity>(field_spec.src)) {
-                const auto& vel = dataSource.GetVelocity();
-                velocity_buffer.push_back(static_cast<double>(vel.x()));
-                velocity_buffer.push_back(static_cast<double>(vel.y()));
-                velocity_buffer.push_back(static_cast<double>(vel.z()));
-                // velocity_buffer.push_back(static_cast<double>((std::isinf(vel.x()) || std::isnan(vel.x())) ? 0.0 : vel.x()));
-                // velocity_buffer.push_back(static_cast<double>((std::isinf(vel.y()) || std::isnan(vel.y())) ? 0.0 : vel.y()));
-                // velocity_buffer.push_back(static_cast<double>((std::isinf(vel.z()) || std::isnan(vel.z())) ? 0.0 : vel.z()));
-            } else if (std::holds_alternative<source::ShearStress>(field_spec.src)) {
-                double val = dataSource.GetShearStress();
-                shearstress_buffer.push_back(static_cast<float>(val));
-                // shearstress_buffer.push_back(static_cast<float>((std::isinf(val) || std::isnan(val)) ? -1.0 : val));
+        auto& buffer = field_buffers[field_spec.name];
+        auto len = GetFieldLength(field_spec.src);
+        field_lengths[field_spec.name] = len;
+
+        std::visit([&](auto tag) {
+            using T = decltype(tag);
+            T values[9] = {};
+            if constexpr (std::is_same_v<T, float>) {
+            if (std::holds_alternative<source::Pressure>(field_spec.src)) values[0] = static_cast<T>(dataSource.GetPressure());
+            if (std::holds_alternative<source::ShearStress>(field_spec.src)) values[0] = static_cast<T>(dataSource.GetShearStress());
+            } else if constexpr (std::is_same_v<T, double>) {
+            if (std::holds_alternative<source::Velocity>(field_spec.src)) {
+                auto v = dataSource.GetVelocity();
+                values[0] = static_cast<T>(v.x());
+                values[1] = static_cast<T>(v.y());
+                values[2] = static_cast<T>(v.z());
             }
+            }
+            buffer.insert(buffer.end(), reinterpret_cast<char*>(values), reinterpret_cast<char*>(values + len));
+            field_types[field_spec.name] = hdf5_type_from_variant<T>();
+        }, field_spec.typecode);
         }
-      }
     }
-  
-    // 3. 并行写入所有数据集
-    WriteDataset(group_id, "geometry", coords_buffer, H5T_NATIVE_UINT32, global_site_count, local_site_count, 3, comms, mpi_comm);
-    
+
+    std::vector<uint32_t> flat_coords;
+    for (auto& p : geometry_data)
+        flat_coords.insert(flat_coords.end(), p.begin(), p.end());
+
+    hsize_t geo_dims[2] = {global_site_count, 3};
+    hid_t geo_space = H5Screate_simple(2, geo_dims, NULL);
+    hid_t geo_dset = H5Dcreate2(group_id, "geometry", H5T_NATIVE_UINT32, geo_space,
+                                H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    H5_CHECK(geo_dset);
+    hsize_t start[2] = {comms.Scan(local_site_count, MPI_SUM) - local_site_count, 0};
+    hsize_t count[2] = {local_site_count, 3};
+    H5Sselect_hyperslab(geo_space, H5S_SELECT_SET, start, NULL, count, NULL);
+    hid_t memspace = H5Screate_simple(2, count, NULL);
+    hid_t xfer = H5Pcreate(H5P_DATASET_XFER);
+    H5Pset_dxpl_mpio(xfer, H5FD_MPIO_COLLECTIVE);
+    H5Dwrite(geo_dset, H5T_NATIVE_UINT32, memspace, geo_space, xfer, flat_coords.data());
+    H5Pclose(xfer); H5Sclose(memspace); H5Sclose(geo_space); H5Dclose(geo_dset);
+
     for (const auto& field_spec : outputSpec.fields) {
-        if (std::holds_alternative<source::Pressure>(field_spec.src)) {
-            WriteDataset(group_id, field_spec.name, pressure_buffer, H5T_NATIVE_FLOAT, global_site_count, local_site_count, 1, comms, mpi_comm);
-        } else if (std::holds_alternative<source::Velocity>(field_spec.src)) {
-            WriteDataset(group_id, field_spec.name, velocity_buffer, H5T_NATIVE_DOUBLE, global_site_count, local_site_count, 3, comms, mpi_comm);
-        } else if (std::holds_alternative<source::ShearStress>(field_spec.src)) {
-            WriteDataset(group_id, field_spec.name, shearstress_buffer, H5T_NATIVE_FLOAT, global_site_count, local_site_count, 1, comms, mpi_comm);
-        }
+        const std::string& name = field_spec.name;
+        const auto& raw_buffer = field_buffers[name];
+        auto h5type = field_types[name];
+        unsigned len = field_lengths[name];
+        hsize_t dims[2] = {global_site_count, len};
+        hid_t space = H5Screate_simple(2, dims, NULL);
+        hid_t dset = H5Dcreate2(group_id, name.c_str(), h5type, space,
+                                H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        hsize_t start[2] = {comms.Scan(local_site_count, MPI_SUM) - local_site_count, 0};
+        hsize_t count[2] = {local_site_count, len};
+        H5Sselect_hyperslab(space, H5S_SELECT_SET, start, NULL, count, NULL);
+        hid_t memspace = H5Screate_simple(2, count, NULL);
+        hid_t xfer = H5Pcreate(H5P_DATASET_XFER);
+        H5Pset_dxpl_mpio(xfer, H5FD_MPIO_COLLECTIVE);
+        H5Dwrite(dset, h5type, memspace, space, xfer, raw_buffer.data());
+        H5Pclose(xfer); H5Sclose(memspace); H5Sclose(space); H5Dclose(dset);
     }
 
     H5_CHECK(H5Gclose(group_id));
-    // H5_CHECK(H5Fclose(file_id));
-    // file_id = -1; // Reset file_id to indicate that the file is closed
-  }
+    }
 }
 #endif

@@ -93,7 +93,7 @@ link_libraries(Boost::headers)
 # endif()
 if(USE_HDF5)
   include(UseHDF5)
-  add_definitions(-DUSE_HDF5)
+  # add_definitions(-DUSE_HDF5)
 endif()
 
 if(HEMELB_BUILD_RBC)

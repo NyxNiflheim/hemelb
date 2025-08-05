@@ -31,6 +31,7 @@ namespace hemelb::extraction
     util::clone_ptr<GeometrySelector> geometry;
     std::vector<OutputField> fields;
     file_timestep_mode ts_mode;
+    std::string format;
   };
 }
 

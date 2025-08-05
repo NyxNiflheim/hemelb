@@ -17,7 +17,6 @@
 #include <hdf5.h>
 #include <string>
 #include <vector>
-#include <variant> // for std::variant
 
 namespace hemelb
 {
@@ -36,16 +35,6 @@ namespace hemelb
 
     private:
       void WriteXDMFFile();
-
-      // define a variant type to hold all possible vector data types
-      using BufferVariant = std::variant<
-          std::vector<int>,
-          std::vector<float>,
-          std::vector<double>,
-          std::vector<unsigned int>,
-          std::vector<long int>,
-          std::vector<long unsigned int>
-      >;
 
       MPI_Comm mpi_comm;
       hid_t file_id = -1;
